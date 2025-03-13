@@ -1,4 +1,4 @@
-# VibraScope - Equipo de laboratorio
+# VibraScope - Equipo de laboratorio de Vibraciones Mecánicas
 
 Sistema para digitalizar modelos masa-resorte-amortiguador en laboratorios educativos de vibraciones mecánicas.
 
