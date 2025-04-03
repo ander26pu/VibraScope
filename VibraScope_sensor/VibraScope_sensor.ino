@@ -7,16 +7,12 @@ void setup() {
   Serial.begin(115200);
   while (!Serial) { delay(1); }
   
-  Serial.println("Adafruit VL53L0X - Medición Mejorada");
+  Serial.println("Adafruit VL53L0X - Medición Directa");
 
   if (!lox.begin()) {
     Serial.println(F("Error al inicializar VL53L0X"));
     while (1);
   }
-
-  // NOTA: Para aumentar la precisión se suele aumentar el "timing budget".
-  // La librería Adafruit no expone directamente una función para ajustarlo,
-  // por lo que podrías considerar modificar la librería o usar otra.
 }
 
 void loop() {
@@ -24,8 +20,11 @@ void loop() {
   lox.rangingTest(&measure, false);  // Ejecuta la medición (bloqueante)
 
   if (measure.RangeStatus != 4) {  // Medición válida
+    // Obtener la lectura directa del sensor
+    float currentReading = measure.RangeMilliMeter;
+
     Serial.print("D:");
-    Serial.println(measure.RangeMilliMeter);
+    Serial.println(currentReading);
   } else {
     Serial.println("D:-1");
   }
