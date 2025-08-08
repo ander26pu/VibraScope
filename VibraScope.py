@@ -64,21 +64,28 @@ class App(ctk.CTk):
         self.title("VibraScope")
         self.geometry("800x600")
         
-        # Usar deque para manejo eficiente de datos
+        # Variables de datos
         self.data_lock = threading.Lock()
         self.time_window = 10
         self.raw_data = deque(maxlen=math.ceil(self.time_window * 100))
         self.filtered_data = deque(maxlen=math.ceil(self.time_window * 100))
         self.velocity_data = deque(maxlen=math.ceil(self.time_window * 100))
         self.acceleration_data = deque(maxlen=math.ceil(self.time_window * 100))
-        
-        # Nuevo: Datos para la distancia relativa
-        self.relative_offset = 0  # Valor base para calcular la distancia relativa
+        # Datos para la distancia relativa
+        self.relative_offset = 0  
         self.relative_data = deque(maxlen=math.ceil(self.time_window * 100))
         
         self.recording = False
         self.recorded_data = []
         self.displacement_range = (-100, 100)
+        
+        # Nueva variable para pausar la gráfica
+        self.paused = False
+        
+        # Variables para los cursores
+        self.cursor1_x = None
+        self.cursor2_x = None
+        self.active_cursor = None  # "cursor1" o "cursor2"
         
         # Configuración de la interfaz
         self.grid_columnconfigure(0, weight=3)
@@ -95,14 +102,19 @@ class App(ctk.CTk):
         # Canvas para gráficos
         self.displacement_canvas = tk.Canvas(self.content_frame, bg="#1E1E1E")
         self.displacement_canvas.grid(row=0, column=0, sticky="nsew", padx=5, pady=2)
-        # Comentamos las gráficas de velocidad y aceleración:
+        # Se han comentado las gráficas de velocidad y aceleración:
         # self.velocity_canvas = tk.Canvas(self.content_frame, bg="#1E1E1E")
         # self.velocity_canvas.grid(row=1, column=0, sticky="nsew", padx=5, pady=2)
         # self.acceleration_canvas = tk.Canvas(self.content_frame, bg="#1E1E1E")
         # self.acceleration_canvas.grid(row=2, column=0, sticky="nsew", padx=5, pady=2)
         self.animation_canvas = tk.Canvas(self.content_frame, bg="#1E1E1E")
         self.animation_canvas.grid(row=3, column=0, sticky="nsew", padx=5, pady=2)
-
+        
+        # Vincular eventos del mouse al canvas para los cursores
+        self.displacement_canvas.bind("<ButtonPress-1>", self.on_canvas_click)
+        self.displacement_canvas.bind("<B1-Motion>", self.on_canvas_drag)
+        self.displacement_canvas.bind("<ButtonRelease-1>", self.on_canvas_release)
+        
         # Panel de control derecho
         self.control_panel = ctk.CTkFrame(self)
         self.control_panel.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
@@ -122,6 +134,17 @@ class App(ctk.CTk):
         self.reset_relative_button = ctk.CTkButton(self.control_panel, text="Set a Cero Relativo", command=self.set_relative_zero,
                                                    fg_color="#FFAA00", text_color="#000000")
         self.reset_relative_button.pack(pady=5, padx=10, fill='x')
+        
+        # Botón de pausa/continuar para la gráfica
+        self.pause_button = ctk.CTkButton(self.control_panel, text="Pausar Gráfica", command=self.toggle_pause,
+                                          fg_color="#FFA500", text_color="#000000")
+        self.pause_button.pack(pady=5, padx=10, fill='x')
+        
+        # Mostrar T (periodo) y F (frecuencia)
+        self.period_label = ctk.CTkLabel(self.control_panel, text="T: -- s", font=("Arial", 14))
+        self.period_label.pack(pady=5, padx=10, fill='x')
+        self.frequency_label = ctk.CTkLabel(self.control_panel, text="F: -- Hz", font=("Arial", 14))
+        self.frequency_label.pack(pady=5, padx=10, fill='x')
         
         # Configuración del puerto COM
         ctk.CTkLabel(self.control_panel, text="Puerto COM:").pack(pady=(10,0))
@@ -221,7 +244,6 @@ class App(ctk.CTk):
             self.raw_data.append((current_time, value))
             filtered_value = value
             self.filtered_data.append((current_time, filtered_value))
-            
             # Calcular el valor relativo y almacenarlo
             relative_value = value - self.relative_offset
             self.relative_data.append((current_time, relative_value))
@@ -243,12 +265,24 @@ class App(ctk.CTk):
                 dt = t_curr - t_prev
                 acceleration = (vel_curr - vel_prev) / dt if dt > 0 else 0
             self.acceleration_data.append((current_time, acceleration))
+            if self.recording:
+                # guarda: (timestamp, desplazamiento, velocidad, aceleración)
+                self.recorded_data.append((
+                    current_time,
+                    filtered_value,
+                    velocity,
+                    acceleration
+                ))
             
         self.after(0, lambda: self.current_distance_label.configure(text=f"Distancia Absoluta: {value:.2f} mm"))
         self.after(0, lambda: self.relative_distance_label.configure(text=f"Distancia Relativa: {relative_value:.2f} mm"))
         
         # Actualizamos la animación usando el valor relativo
         self.update_mass_position(relative_value)
+
+        if self.recording:
+            # guarda el timestamp, valor, velocidad y aceleración
+            self.recorded_data.append((current_time, filtered_value, velocity, acceleration))
 
     def handle_serial_error(self, error):
         if self.serial_thread:
@@ -264,6 +298,11 @@ class App(ctk.CTk):
             self.relative_offset = self.raw_data[-1][1] if self.raw_data else 0
             self.relative_data.clear()
         self.relative_distance_label.configure(text="Distancia Relativa: 0.00 mm")
+
+    def toggle_pause(self):
+        """Activa o desactiva el modo pausa en la actualización de la gráfica."""
+        self.paused = not self.paused
+        self.pause_button.configure(text="Continuar Gráfica" if self.paused else "Pausar Gráfica")
 
     def toggle_serial(self):
         if self.serial_thread and self.serial_thread.running:
@@ -283,55 +322,6 @@ class App(ctk.CTk):
     def _filter_time_window(self, data):
         current_time = time.time()
         return [(t, val) for (t, val) in data if t >= current_time - self.time_window]
-    
-    def draw_dual_graph(self, canvas, data1, data2, y_range, title):
-        try:
-            canvas.delete("graph")
-            w = canvas.winfo_width()
-            h = canvas.winfo_height()
-            if w <= 0 or h <= 0:
-                return
-            left_pad = 50
-            top_pad = 30
-            bottom_pad = 30
-            current_time = time.time()
-            num_lines = 5
-            for i in range(num_lines + 1):
-                y = top_pad + (h - top_pad - bottom_pad) * (i / num_lines)
-                canvas.create_line(left_pad, y, w, y, fill="#333333", dash=(2, 2), tags="graph")
-                value = y_range[0] + (y_range[1] - y_range[0]) * (1 - i/num_lines)
-                canvas.create_text(left_pad-10, y, text=f"{value:.0f}", fill="white", anchor="e", tags="graph")
-            times = [current_time - self.time_window,
-                     current_time - self.time_window/2,
-                     current_time]
-            for t in times:
-                x = left_pad + ((t - (current_time - self.time_window)) / self.time_window) * (w - left_pad)
-                time_str = time.strftime("%H:%M:%S", time.localtime(t))
-                canvas.create_text(x, h - bottom_pad + 15, text=time_str, fill="white", anchor="n", tags="graph")
-            filtered_data1 = self._filter_time_window(data1)
-            if len(filtered_data1) > 1:
-                points = []
-                for (t, val) in filtered_data1:
-                    x = left_pad + ((t - (current_time - self.time_window)) / self.time_window) * (w - left_pad)
-                    y = top_pad + (h - top_pad - bottom_pad) * (1 - (val - y_range[0])/(y_range[1]-y_range[0]))
-                    points.append((x, y))
-                if len(points) > 1:
-                    flat_points = [coord for point in points for coord in point]
-                    canvas.create_line(*flat_points, fill="#FFAA00", width=1, smooth=True, tags="graph")
-            filtered_data2 = self._filter_time_window(data2)
-            if len(filtered_data2) > 1:
-                points = []
-                for (t, val) in filtered_data2:
-                    x = left_pad + ((t - (current_time - self.time_window)) / self.time_window) * (w - left_pad)
-                    y = top_pad + (h - top_pad - bottom_pad) * (1 - (val - y_range[0])/(y_range[1]-y_range[0]))
-                    points.append((x, y))
-                if len(points) > 1:
-                    flat_points = [coord for point in points for coord in point]
-                    canvas.create_line(*flat_points, fill="#00FFAA", width=1, smooth=True, tags="graph")
-            canvas.create_text(left_pad + 10, top_pad - 20, text=title, fill="white",
-                               anchor="w", font=("Arial", 10, "bold"), tags="graph")
-        except Exception as e:
-            print("Error en draw_dual_graph:", e)
     
     def draw_graph(self, canvas, data, y_range, title):
         try:
@@ -373,19 +363,14 @@ class App(ctk.CTk):
             print("Error en draw_graph:", e)
     
     def update_graphs(self):
-    # Actualiza la gráfica de desplazamiento usando los datos relativos
-        with self.data_lock:
-            relative_copy = list(self.relative_data)
-            # Comentamos la copia de los datos de velocidad y aceleración:
-            # velocity_copy = self.velocity_data.copy()
-            # acceleration_copy = self.acceleration_data.copy()
-        self.draw_graph(self.displacement_canvas, relative_copy, self.displacement_range, "Desplazamiento Relativo (mm)")
-        # Comentamos la actualización de la gráfica de velocidad:
-        # self.draw_graph(self.velocity_canvas, velocity_copy, self.velocity_range, "Velocidad (mm/s)")
-        # Comentamos la actualización de la gráfica de aceleración:
-        # self.draw_graph(self.acceleration_canvas, acceleration_copy, self.acceleration_range, "Aceleración (mm/s²)")
+        # Si no está en pausa, se actualiza la gráfica de desplazamiento
+        if not self.paused:
+            with self.data_lock:
+                relative_copy = list(self.relative_data)
+            self.draw_graph(self.displacement_canvas, relative_copy, self.displacement_range, "Desplazamiento Relativo (mm)")
+        # Siempre se dibujan los cursores
+        self.draw_cursors()
         self.after(100, self.update_graphs)
-
     
     def update_mass_position(self, value):
         w = self.animation_canvas.winfo_width()
@@ -424,6 +409,59 @@ class App(ctk.CTk):
         finally:
             self.after(20, self.update_animation)
     
+    def draw_cursors(self):
+        """Dibuja dos líneas verticales (cursores) en la gráfica de desplazamiento y actualiza T y F."""
+        canvas = self.displacement_canvas
+        canvas.delete("cursor")
+        w = canvas.winfo_width()
+        # Definir el margen usado en draw_graph (fijado en 50)
+        left_pad = 50
+        if w <= left_pad:
+            return
+        # Si aún no se han definido, inicializarlos en 1/3 y 2/3 del ancho útil
+        if self.cursor1_x is None:
+            self.cursor1_x = left_pad + (w - left_pad) * 0.33
+        if self.cursor2_x is None:
+            self.cursor2_x = left_pad + (w - left_pad) * 0.66
+        # Dibujar líneas verticales
+        canvas.create_line(self.cursor1_x, 0, self.cursor1_x, canvas.winfo_height(), fill="red", width=2, tags="cursor")
+        canvas.create_line(self.cursor2_x, 0, self.cursor2_x, canvas.winfo_height(), fill="red", width=2, tags="cursor")
+        # Actualizar T y F en el panel: se asume que la diferencia horizontal representa self.time_window segundos
+        effective_width = w - left_pad
+        delta_pixels = abs(self.cursor2_x - self.cursor1_x)
+        T = (delta_pixels / effective_width) * self.time_window  # Periodo en segundos
+        F = 1 / T if T > 0 else 0
+        self.period_label.configure(text=f"T: {T:.2f} s")
+        self.frequency_label.configure(text=f"F: {F:.2f} Hz")
+    
+    def on_canvas_click(self, event):
+        """Detecta si se hace clic cerca de alguno de los cursores."""
+        threshold = 10  # píxeles
+        if self.cursor1_x is not None and abs(event.x - self.cursor1_x) < threshold:
+            self.active_cursor = "cursor1"
+        elif self.cursor2_x is not None and abs(event.x - self.cursor2_x) < threshold:
+            self.active_cursor = "cursor2"
+        else:
+            self.active_cursor = None
+
+    def on_canvas_drag(self, event):
+        """Permite arrastrar el cursor activo."""
+        if self.active_cursor is not None:
+            # Obtener los límites del canvas (se usa left_pad = 50)
+            left_pad = 50
+            w = self.displacement_canvas.winfo_width()
+            new_x = max(left_pad, min(event.x, w))
+            if self.active_cursor == "cursor1":
+                self.cursor1_x = new_x
+            elif self.active_cursor == "cursor2":
+                self.cursor2_x = new_x
+            self.draw_cursors()
+
+    def on_canvas_release(self, event):
+        """Al soltar el botón del mouse se finaliza el movimiento."""
+        self.active_cursor = None
+        self.draw_cursors()
+
     def reset_data(self):
         with self.data_lock:
             self.raw_data.clear()
@@ -431,32 +469,41 @@ class App(ctk.CTk):
             self.velocity_data.clear()
             self.acceleration_data.clear()
             self.relative_data.clear()
+        # También reiniciamos la posición de los cursores (se harán nuevos en draw_cursors)
+        self.cursor1_x = None
+        self.cursor2_x = None
     
     def toggle_recording(self):
+        if not self.recording:
+            # borra datos de la sesión anterior
+            self.recorded_data = []
         self.recording = not self.recording
-        self.record_button.configure(text="Detener Grabación" if self.recording else "Iniciar Grabación")
-        if not self.recording and hasattr(self, 'recorded_data'):
-            messagebox.showinfo("Grabación", f"Datos grabados: {len(self.recorded_data)} puntos")
+        self.record_button.configure(
+            text="Detener Grabación" if self.recording else "Iniciar Grabación"
+        )
+
     
     def save_data(self):
-        if not hasattr(self, 'recorded_data') or not self.recorded_data:
-            messagebox.showwarning("Advertencia", "No hay datos grabados")
+        if not self.recorded_data:
+            messagebox.showwarning("Advertencia", "No hay datos guardados")
             return
+
         file_path = filedialog.asksaveasfilename(
             defaultextension=".csv",
-            filetypes=[("CSV Files", "*.csv"), ("Todos los archivos", "*.*")]
+            filetypes=[("CSV files","*.csv"),("Todos los archivos","*.*")]
         )
         if not file_path:
             return
-        try:
-            with open(file_path, 'w') as f:
-                f.write("Tiempo,Desplazamiento(mm),Velocidad(mm/s),Aceleracion(mm/s²)\n")
-                for entry in self.recorded_data:
-                    time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(entry[3]))
-                    f.write(f"{time_str},{entry[0]:.2f},{entry[1]:.2f},{entry[2]:.2f}\n")
-            messagebox.showinfo("Éxito", "Datos guardados correctamente")
-        except Exception as e:
-            messagebox.showerror("Error", f"Error al guardar: {str(e)}")
+
+        import csv
+        with open(file_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(["Tiempo","Desplaz.","Velocidad","Aceleración"])
+            for t, v, vel, acc in self.recorded_data:
+                writer.writerow([f"{t:.3f}", f"{v:.3f}", f"{vel:.3f}", f"{acc:.3f}"])
+        messagebox.showinfo("Éxito","Datos guardados correctamente")
+
+
     
     def on_closing(self):
         if self.serial_thread:
